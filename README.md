@@ -1,4 +1,4 @@
-# AgentForge
+# AgentForge - GitHub
 
 An autonomous AI agent that handles real multi-step developer workflows —
 reading GitHub issues, searching relevant code, drafting fixes, and opening
@@ -109,3 +109,5 @@ remaining items — each doc has an honest "not yet implemented" section.
 ## License
 
 [MIT](LICENSE)
+
+Project by [@manulthanura](https://manulthanura.com)
