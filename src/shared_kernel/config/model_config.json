@@ -1,0 +1,5 @@
+{
+  "anthropic": "claude-opus-4-8",
+  "openai": "gpt-4o",
+  "ollama": "llama3.1"
+}
