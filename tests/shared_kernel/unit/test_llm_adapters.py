@@ -11,10 +11,11 @@ import httpx
 import pytest
 
 from shared_kernel.config.settings import Settings
-from shared_kernel.llm import LLMError
+from shared_kernel.llm import LLMError, LLMUnavailableError
 from shared_kernel.llm.anthropic_adapter import AnthropicProvider
 from shared_kernel.llm.ollama_adapter import OllamaProvider
 from shared_kernel.llm.openai_adapter import OpenAIProvider
+from shared_kernel.llm.openrouter_adapter import OpenRouterProvider
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -178,4 +179,72 @@ def test_ollama_http_error_becomes_llm_error(fake_keys):
     # Connection failures are transient -> retryable LLMUnavailableError
     # (still an LLMError for callers that don't care about the distinction).
     with pytest.raises(LLMError, match="Ollama unreachable"):
+        provider.complete(MESSAGES)
+
+
+# --- OpenRouter ------------------------------------------------------------
+
+
+def _openrouter_response(text="hi from openrouter"):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=text), finish_reason="stop"
+            )
+        ],
+        model="openai/gpt-4o",
+        usage=SimpleNamespace(prompt_tokens=18, completion_tokens=5),
+    )
+
+
+def test_openrouter_uses_openai_compatible_base_url(fake_keys):
+    provider = OpenRouterProvider(Settings())
+    assert str(provider._client.base_url) == "https://openrouter.ai/api/v1/"
+    assert provider.model == "openai/gpt-4o"
+
+
+def test_openrouter_attribution_headers_are_optional(fake_keys):
+    # No OPENROUTER_SITE_URL / OPENROUTER_APP_NAME set -> no extra headers.
+    provider = OpenRouterProvider(Settings())
+    assert "HTTP-Referer" not in provider._client.default_headers
+    assert "X-Title" not in provider._client.default_headers
+
+
+def test_openrouter_attribution_headers_when_configured(monkeypatch, fake_keys):
+    monkeypatch.setenv("OPENROUTER_SITE_URL", "https://example.com")
+    monkeypatch.setenv("OPENROUTER_APP_NAME", "AgentForge")
+    provider = OpenRouterProvider(Settings())
+    assert provider._client.default_headers["HTTP-Referer"] == "https://example.com"
+    assert provider._client.default_headers["X-Title"] == "AgentForge"
+
+
+def test_openrouter_request_mapping(fake_keys):
+    provider = OpenRouterProvider(Settings())
+    stub = _StubOpenAICompletions(_openrouter_response())
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=stub))
+    result = provider.complete(
+        MESSAGES, system="be brief", max_tokens=555, json_mode=True
+    )
+    assert stub.kwargs["model"] == "openai/gpt-4o"
+    assert stub.kwargs["max_tokens"] == 555
+    assert stub.kwargs["response_format"] == {"type": "json_object"}
+    assert stub.kwargs["messages"][0] == {"role": "system", "content": "be brief"}
+    assert stub.kwargs["messages"][1:] == MESSAGES
+    assert result.text == "hi from openrouter"
+    assert result.stop_reason == "stop"
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
+
+
+def test_openrouter_null_choices_becomes_llm_unavailable_error(fake_keys):
+    # OpenRouter can return HTTP 200 with `choices: null` and an embedded
+    # `error` when the routed upstream provider fails (common on free-tier
+    # models), instead of raising an HTTP error status.
+    provider = OpenRouterProvider(Settings())
+    response = SimpleNamespace(
+        choices=None, error={"message": "upstream provider timed out"}
+    )
+    stub = _StubOpenAICompletions(response)
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=stub))
+    with pytest.raises(LLMUnavailableError, match="upstream provider timed out"):
         provider.complete(MESSAGES)

@@ -5,7 +5,7 @@ ready-to-use Application container. Entry points (main.py, the FastAPI app)
 call this instead of wiring adapters themselves.
 
 Adapter selection is configuration-only:
-- LLM_PROVIDER picks the LLM adapter (anthropic | openai | ollama).
+- LLM_PROVIDER picks the LLM adapter (anthropic | openai | ollama | openrouter).
 - CODE_SEARCHER picks the code searcher (tree_sitter | filesystem).
 - GITHUB_TOKEN + GITHUB_REPO enable the GitHub reader and PR client.
 - SLACK_WEBHOOK_URL / SMTP_HOST+SMTP_TO enable notification channels.

@@ -31,6 +31,21 @@ class Settings:
     openai_api_key: str | None = field(
         default_factory=lambda: os.environ.get("OPENAI_API_KEY")
     )
+    openrouter_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("OPENROUTER_API_KEY")
+    )
+    openrouter_base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+        )
+    )
+    # Optional attribution headers OpenRouter uses for its public rankings.
+    openrouter_site_url: str | None = field(
+        default_factory=lambda: os.environ.get("OPENROUTER_SITE_URL")
+    )
+    openrouter_app_name: str | None = field(
+        default_factory=lambda: os.environ.get("OPENROUTER_APP_NAME")
+    )
     ollama_base_url: str = field(
         default_factory=lambda: os.environ.get(
             "OLLAMA_BASE_URL", "http://localhost:11434"
