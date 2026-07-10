@@ -1,7 +1,7 @@
 # LLM Providers
 
 All LLM access goes through one port — `LLMProvider` in
-`src/shared_kernel/llm/port.py` — with three adapters selected purely by
+`src/shared_kernel/llm/port.py` — with four adapters selected purely by
 configuration. No agent code imports a provider SDK.
 
 ## Switching providers
@@ -10,11 +10,23 @@ configuration. No agent code imports a provider SDK.
 LLM_PROVIDER=anthropic   # Claude (default) — needs ANTHROPIC_API_KEY
 LLM_PROVIDER=openai      # GPT — needs OPENAI_API_KEY
 LLM_PROVIDER=ollama      # local models — needs a running Ollama, no key
+LLM_PROVIDER=openrouter  # any OpenRouter-hosted model — needs OPENROUTER_API_KEY
 ```
 
 That's the entire change. The factory (`shared_kernel/llm/factory.py`)
 instantiates the matching adapter; the graph, router, and use cases are
 untouched.
+
+OpenRouter proxies many upstream providers (OpenAI, Anthropic, Meta, Google,
+...) behind one OpenAI-compatible Chat Completions endpoint, so the adapter
+reuses the `openai` SDK pointed at `OPENROUTER_BASE_URL`
+(default `https://openrouter.ai/api/v1`) instead of adding a new dependency.
+Model names are OpenRouter slugs — `<upstream-provider>/<model>`, e.g.
+`anthropic/claude-sonnet-4.5` or `meta-llama/llama-3.1-70b-instruct` — set
+via `LLM_MODEL` or `model_config.json`, same as every other provider.
+`OPENROUTER_SITE_URL` / `OPENROUTER_APP_NAME` are optional attribution
+headers OpenRouter shows on its public leaderboards; leave them blank to
+omit.
 
 ## Models
 
@@ -23,6 +35,7 @@ untouched.
 | anthropic | `claude-opus-4-8` | `shared_kernel/config/model_config.json` |
 | openai | `gpt-4o` | 〃 |
 | ollama | `llama3.1` | 〃 |
+| openrouter | `openai/gpt-4o` | 〃 |
 
 Precedence: `LLM_MODEL` env override → `model_config.json` → adapter's
 built-in default. Update at runtime without a deploy:
@@ -56,7 +69,7 @@ curl -X PATCH http://localhost:8000/admin/model-config \
 `src/bootstrap.py`); see
 [reliability.md](reliability.md) for the policy details.
 
-## Adding a fourth provider
+## Adding another provider
 
 1. New adapter in `shared_kernel/llm/<name>_adapter.py` implementing
    `complete` and mapping failures to the typed errors above.

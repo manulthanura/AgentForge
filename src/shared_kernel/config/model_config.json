@@ -1,5 +1,6 @@
 {
   "anthropic": "claude-opus-4-8",
   "openai": "gpt-4o",
-  "ollama": "llama3.1"
+  "ollama": "llama3.1",
+  "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"
 }

@@ -24,8 +24,8 @@ The defaults in `.env.example` work out of the box for local development
 
 | Variable | Needed for | Default |
 |----------|-----------|---------|
-| `LLM_PROVIDER` | which LLM adapter runs (`anthropic` \| `openai` \| `ollama`) | `anthropic` |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | real LLM calls for the chosen provider | — |
+| `LLM_PROVIDER` | which LLM adapter runs (`anthropic` \| `openai` \| `ollama` \| `openrouter`) | `anthropic` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | real LLM calls for the chosen provider | — |
 | `OLLAMA_BASE_URL` | local models via Ollama (no key needed) | `http://localhost:11434` |
 | `DATABASE_URL` | Postgres persistence + checkpoints | `postgresql://user:pass@localhost:5432/agentforge` |
 | `GITHUB_TOKEN` + `GITHUB_REPO` | reading real issues / opening PRs | off when empty |

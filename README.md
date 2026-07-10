@@ -83,7 +83,7 @@ GitHub webhook ──▶ FastAPI ──▶ RunWorkflowUseCase
 |-------|--------|-----|
 | Agent framework | LangGraph | explicit state machine, checkpointing, `interrupt()` for human-in-the-loop ([ADR-001](docs/architecture/adr/001-langgraph-over-crewai-autogen.md)) |
 | State | PostgreSQL | ACID durability for multi-day pauses ([ADR-002](docs/architecture/adr/002-postgresql-for-state-not-redis.md)) |
-| LLM | Anthropic / OpenAI / Ollama | one port, adapter picked by `LLM_PROVIDER` ([ADR-005](docs/architecture/adr/005-provider-agnostic-llm-port.md)) |
+| LLM | Anthropic / OpenAI / Ollama / OpenRouter | one port, adapter picked by `LLM_PROVIDER` ([ADR-005](docs/architecture/adr/005-provider-agnostic-llm-port.md)) |
 | Code search | tree-sitter AST → filesystem fallback | ranked relevance with graceful degradation |
 | Sandbox | Docker (isolated, no network) | untrusted generated code ([ADR-003](docs/architecture/adr/003-docker-sandbox-for-code-execution.md)) |
 
