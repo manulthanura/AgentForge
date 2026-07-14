@@ -160,6 +160,8 @@ def build_application(
         searcher=code_searcher,
         generate_fix=generate_fix,
         request_approval_hook=request_approval.execute,
+        create_pull_request=create_pull_request,
+        comment_hook=issue_reader.add_comment if issue_reader else None,
     )
     run_workflow = RunWorkflowUseCase(engine, repository, event_bus)
     resume_workflow = ResumeWorkflowUseCase(engine, repository, event_bus)

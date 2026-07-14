@@ -18,13 +18,14 @@ from langgraph.graph import END, START, StateGraph
 
 from issue_intake.application.analyze_issue import AnalyzeIssueUseCase
 from issue_intake.domain.models import IssueType
+from pull_request.application.create_pull_request import CreatePullRequestUseCase
 from shared_kernel.config.settings import Settings, get_settings
 from shared_kernel.events import EventBus
 
 from ...application.routing import ESCALATE, FINISH, AgentRouter
 from ...application.tools import ToolCatalog
 from ...domain.models import WorkflowStatus
-from .nodes import ApprovalHook, make_nodes
+from .nodes import ApprovalHook, CommentHook, make_nodes
 from .state import AgentState
 
 
@@ -44,6 +45,8 @@ def build_graph(
     checkpointer=None,
     event_bus: EventBus | None = None,
     request_approval_hook: ApprovalHook | None = None,
+    create_pull_request_uc: CreatePullRequestUseCase | None = None,
+    comment_hook: CommentHook | None = None,
 ):
     """Compile the agent state machine from its collaborators."""
     settings = settings or get_settings()
@@ -54,6 +57,8 @@ def build_graph(
         settings,
         event_bus,
         request_approval_hook,
+        create_pull_request_uc=create_pull_request_uc,
+        comment_hook=comment_hook,
     )
 
     def _after_route(state: AgentState) -> str:

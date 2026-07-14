@@ -18,6 +18,7 @@ from code_intelligence.infrastructure.filesystem_searcher import (
 from fix_generation.application.generate_fix import GenerateFixUseCase
 from fix_generation.application.propose_fix import ProposeFixUseCase
 from issue_intake.application.analyze_issue import AnalyzeIssueUseCase
+from pull_request.application.create_pull_request import CreatePullRequestUseCase
 from shared_kernel.config.settings import Settings, get_settings
 from shared_kernel.events import EventBus
 from shared_kernel.llm import LLMProvider
@@ -27,7 +28,7 @@ from .application.run_workflow import RunWorkflowUseCase
 from .application.tools import build_default_catalog
 from .infrastructure.langgraph.engine import LangGraphWorkflowEngine
 from .infrastructure.langgraph.graph import build_graph
-from .infrastructure.langgraph.nodes import ApprovalHook
+from .infrastructure.langgraph.nodes import ApprovalHook, CommentHook
 
 
 def build_agent_graph(
@@ -38,13 +39,19 @@ def build_agent_graph(
     searcher: CodeSearcher | None = None,
     generate_fix: GenerateFixUseCase | None = None,
     request_approval_hook: ApprovalHook | None = None,
+    create_pull_request: CreatePullRequestUseCase | None = None,
+    comment_hook: CommentHook | None = None,
 ):
     """Wire the agent and compile its state machine.
 
     ``searcher`` defaults to the dependency-free filesystem adapter;
     ``generate_fix`` adds the LLM-backed draft_fix tool when provided;
     ``request_approval_hook`` is called with the reviewer payload when a
-    workflow pauses at the approval gate.
+    workflow pauses at the approval gate; ``create_pull_request`` opens the
+    PR from finalize once a fix has been approved (requires GITHUB_TOKEN +
+    GITHUB_REPO — omitted, finalize just marks the workflow done);
+    ``comment_hook`` posts the outcome back on the GitHub issue when the
+    workflow reaches a terminal or human-actionable state.
     """
     settings = settings or get_settings()
     analyze_issue_uc = AnalyzeIssueUseCase(provider)
@@ -62,6 +69,8 @@ def build_agent_graph(
         checkpointer=checkpointer,
         event_bus=event_bus,
         request_approval_hook=request_approval_hook,
+        create_pull_request_uc=create_pull_request,
+        comment_hook=comment_hook,
     )
 
 
@@ -73,6 +82,8 @@ def build_workflow_engine(
     searcher: CodeSearcher | None = None,
     generate_fix: GenerateFixUseCase | None = None,
     request_approval_hook: ApprovalHook | None = None,
+    create_pull_request: CreatePullRequestUseCase | None = None,
+    comment_hook: CommentHook | None = None,
 ) -> LangGraphWorkflowEngine:
     """One engine per app: run and resume must share the compiled graph."""
     graph = build_agent_graph(
@@ -83,6 +94,8 @@ def build_workflow_engine(
         searcher,
         generate_fix,
         request_approval_hook,
+        create_pull_request,
+        comment_hook,
     )
     return LangGraphWorkflowEngine(graph)
 

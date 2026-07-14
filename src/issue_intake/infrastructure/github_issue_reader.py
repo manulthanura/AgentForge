@@ -9,11 +9,11 @@ from github import Auth, Github, GithubException
 
 from shared_kernel.resilience import RetryPolicy, retrying_github_call
 
-from ..application.ports import IssueReader, IssueReadError
+from ..application.ports import IssueCommenter, IssueReader, IssueReadError
 from ..domain.models import Issue
 
 
-class GitHubIssueReader(IssueReader):
+class GitHubIssueReader(IssueReader, IssueCommenter):
     def __init__(
         self,
         repo_full_name: str,
@@ -51,3 +51,15 @@ class GitHubIssueReader(IssueReader):
             body=gh_issue.body or "",
             labels=tuple(label.name for label in gh_issue.labels),
         )
+
+    def add_comment(self, number: int, body: str) -> None:
+        def _post():
+            repo = self._client.get_repo(self._repo_full_name)
+            repo.get_issue(number=number).create_comment(body)
+
+        try:
+            retrying_github_call(_post, policy=self._retry_policy, sleep=self._sleep)
+        except GithubException as exc:
+            raise IssueReadError(
+                f"Could not comment on issue #{number} in {self._repo_full_name}: {exc}"
+            ) from exc

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from shared_kernel.config.settings import get_settings  # noqa: E402
 from shared_kernel.llm import get_provider  # noqa: E402
+from shared_kernel.observability import configure_logging  # noqa: E402
 from shared_kernel.persistence.migrate import run_migrations  # noqa: E402
 
 SAMPLE_ISSUE = {
@@ -90,6 +91,7 @@ def cmd_demo() -> None:
 
 
 def main() -> None:
+    configure_logging(get_settings())
     parser = argparse.ArgumentParser(prog="agentforge")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="apply database migrations")

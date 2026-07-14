@@ -16,6 +16,9 @@ class Diff:
 
     path: str
     content: str
+    # Full proposed file content, carried alongside the diff text so a PR
+    # can be opened later without re-deriving it from the patch.
+    updated: str = ""
     applied: bool = False
 
     @property
@@ -23,4 +26,9 @@ class Diff:
         return not self.content.strip()
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": self.path, "diff": self.content, "applied": self.applied}
+        return {
+            "path": self.path,
+            "diff": self.content,
+            "updated": self.updated,
+            "applied": self.applied,
+        }

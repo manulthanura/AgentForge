@@ -18,6 +18,7 @@ def test_propose_fix_produces_unified_diff():
     assert diff.to_dict() == {
         "path": "src/login.py",
         "diff": diff.content,
+        "updated": "email = sanitize(raw)\n",
         "applied": False,
     }
 

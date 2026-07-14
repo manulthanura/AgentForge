@@ -71,4 +71,5 @@ def workflow_status(workflow_id: str, request: Request):
         "classification": state.get("classification"),
         "decisions": state.get("decisions", []),
         "step_count": state.get("step_count", 0),
+        "pull_request": state.get("pull_request"),
     }

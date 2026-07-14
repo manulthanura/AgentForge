@@ -42,3 +42,7 @@ class AgentState(TypedDict, total=False):
     approval_decision: str  # "approved" | "rejected"
     approval_feedback: str  # human feedback on rejection
     approval_retry_count: int
+
+    # Result of finalize's PR creation attempt (Phase 2): {number, url,
+    # branch} on success, {error} if the gateway raised PullRequestError.
+    pull_request: dict[str, Any]

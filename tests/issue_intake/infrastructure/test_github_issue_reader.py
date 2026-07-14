@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from github import GithubException
 
-from issue_intake.application.ports import IssueReader, IssueReadError
+from issue_intake.application.ports import IssueCommenter, IssueReader, IssueReadError
 from issue_intake.domain.models import Issue
 from issue_intake.infrastructure.github_issue_reader import GitHubIssueReader
 
@@ -74,3 +74,30 @@ def test_reader_wraps_github_errors():
     )
     with pytest.raises(IssueReadError, match="issue #99"):
         reader.get_issue(99)
+
+
+def test_reader_can_comment_on_an_issue():
+    posted = []
+
+    class _Issue:
+        def create_comment(self, body):
+            posted.append(body)
+
+    stub = StubGithub(issue=_Issue())
+    reader = GitHubIssueReader(repo_full_name="user/project", client=stub)
+    assert isinstance(reader, IssueCommenter)
+
+    reader.add_comment(42, "Opened PR #1")
+
+    assert stub.requested_repo == "user/project"
+    assert stub.requested_number == 42
+    assert posted == ["Opened PR #1"]
+
+
+def test_commenting_wraps_github_errors():
+    error = GithubException(404, {"message": "Not Found"}, {})
+    reader = GitHubIssueReader(
+        repo_full_name="user/project", client=StubGithub(error=error)
+    )
+    with pytest.raises(IssueReadError, match="issue #99"):
+        reader.add_comment(99, "x")

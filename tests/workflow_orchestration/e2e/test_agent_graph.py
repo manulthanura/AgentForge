@@ -6,11 +6,37 @@ import json
 
 from langgraph.checkpoint.memory import InMemorySaver
 
+from pull_request.application.create_pull_request import CreatePullRequestUseCase
+from pull_request.application.ports import PullRequestError, PullRequestGateway
+from pull_request.domain.models import PullRequest
 from shared_kernel.config.settings import Settings
 from shared_kernel.events import EventBus, IssueAnalyzed, ToolExecuted
 from workflow_orchestration.bootstrap import build_agent_graph
 
 from tests.support.fakes import FailingProvider, FakeProvider
+
+
+class RecordingGateway(PullRequestGateway):
+    def __init__(self):
+        self.draft = None
+        self.changes = None
+
+    def open_pull_request(self, draft, changes):
+        self.draft = draft
+        self.changes = changes
+        return PullRequest(
+            number=101,
+            url="https://github.com/user/project/pull/101",
+            title=draft.title,
+            branch=draft.branch,
+            base=draft.base,
+            issue_number=draft.issue_number,
+        )
+
+
+class FailingGateway(PullRequestGateway):
+    def open_pull_request(self, draft, changes):
+        raise PullRequestError("branch protection rejected the push")
 
 ANALYSIS_BUG = json.dumps(
     {
@@ -167,6 +193,150 @@ def test_concurrent_workflows_keep_independent_state(sample_issue, vague_issue):
         graph_b.get_state(_config(vague_issue)).values["status"]
         == "awaiting_clarification"
     )
+
+
+def test_finalize_opens_pull_request_when_wired(sample_issue):
+    provider = FakeProvider(
+        responses=[
+            ANALYSIS_BUG,
+            _route(
+                "propose_edit",
+                {
+                    "path": "src/auth/login.py",
+                    "original": "email = raw\n",
+                    "updated": "email = sanitize(raw)\n",
+                },
+            ),
+            _route("finish"),
+        ]
+    )
+    gateway = RecordingGateway()
+    graph = build_agent_graph(
+        provider,
+        checkpointer=InMemorySaver(),
+        create_pull_request=CreatePullRequestUseCase(gateway),
+    )
+    final = graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert final["status"] == "done"
+    assert final["pull_request"]["number"] == 101
+    assert final["pull_request"]["url"].endswith("/pull/101")
+    assert gateway.changes == {"src/auth/login.py": "email = sanitize(raw)\n"}
+    assert gateway.draft.title == f"Fix #42: {sample_issue['title']}"
+    assert any(d["action"] == "pr_opened" for d in final["decisions"])
+
+
+def test_finalize_without_pull_request_wiring_just_marks_done(sample_issue):
+    """Default behavior (no GITHUB_TOKEN/GITHUB_REPO) is unchanged."""
+    provider = FakeProvider(
+        responses=[
+            ANALYSIS_BUG,
+            _route(
+                "propose_edit",
+                {"path": "a.py", "original": "x = 1\n", "updated": "x = 2\n"},
+            ),
+            _route("finish"),
+        ]
+    )
+    graph = build_agent_graph(provider, checkpointer=InMemorySaver())
+    final = graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert final["status"] == "done"
+    assert "pull_request" not in final
+
+
+def test_finalize_records_pr_failure_without_crashing_workflow(sample_issue):
+    provider = FakeProvider(
+        responses=[
+            ANALYSIS_BUG,
+            _route(
+                "propose_edit",
+                {"path": "a.py", "original": "x = 1\n", "updated": "x = 2\n"},
+            ),
+            _route("finish"),
+        ]
+    )
+    graph = build_agent_graph(
+        provider,
+        checkpointer=InMemorySaver(),
+        create_pull_request=CreatePullRequestUseCase(FailingGateway()),
+    )
+    final = graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert final["status"] == "done"
+    assert "branch protection" in final["pull_request"]["error"]
+    assert any(d["action"] == "pr_failed" for d in final["decisions"])
+
+
+def test_finalize_posts_comment_with_pr_link(sample_issue):
+    comments = []
+    provider = FakeProvider(
+        responses=[
+            ANALYSIS_BUG,
+            _route(
+                "propose_edit",
+                {"path": "a.py", "original": "x = 1\n", "updated": "x = 2\n"},
+            ),
+            _route("finish"),
+        ]
+    )
+    graph = build_agent_graph(
+        provider,
+        checkpointer=InMemorySaver(),
+        create_pull_request=CreatePullRequestUseCase(RecordingGateway()),
+        comment_hook=lambda number, body: comments.append((number, body)),
+    )
+    graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert len(comments) == 1
+    number, body = comments[0]
+    assert number == sample_issue["number"]
+    assert "https://github.com/user/project/pull/101" in body
+
+
+def test_escalate_posts_comment_with_reason(sample_issue):
+    comments = []
+    graph = build_agent_graph(
+        FailingProvider(),
+        checkpointer=InMemorySaver(),
+        comment_hook=lambda number, body: comments.append((number, body)),
+    )
+    graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert len(comments) == 1
+    number, body = comments[0]
+    assert number == sample_issue["number"]
+    assert "escalating for human review" in body
+    assert "analysis failed" in body.lower()
+
+
+def test_vague_issue_posts_clarification_comment(vague_issue):
+    comments = []
+    provider = FakeProvider(responses=[ANALYSIS_VAGUE])
+    graph = build_agent_graph(
+        provider,
+        checkpointer=InMemorySaver(),
+        comment_hook=lambda number, body: comments.append((number, body)),
+    )
+    graph.invoke(_initial(vague_issue), _config(vague_issue))
+
+    assert len(comments) == 1
+    number, body = comments[0]
+    assert number == vague_issue["number"]
+    assert "Steps to reproduce" in body
+
+
+def test_comment_hook_failure_does_not_break_workflow(sample_issue):
+    def _boom(number, body):
+        raise RuntimeError("GitHub is down")
+
+    provider = FakeProvider(responses=[ANALYSIS_BUG, _route("finish")])
+    graph = build_agent_graph(
+        provider, checkpointer=InMemorySaver(), comment_hook=_boom
+    )
+    final = graph.invoke(_initial(sample_issue), _config(sample_issue))
+
+    assert final["status"] == "done"
 
 
 def test_domain_events_published_during_run(sample_issue):

@@ -17,4 +17,4 @@ def build_diff(path: str, original: str, updated: str) -> Diff:
             tofile=f"b/{path}",
         )
     )
-    return Diff(path=path, content=content)
+    return Diff(path=path, content=content, updated=updated)

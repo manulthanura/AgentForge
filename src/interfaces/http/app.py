@@ -19,6 +19,7 @@ from bootstrap import Application, build_application
 from shared_kernel.config.model_config import ModelConfigStore
 from shared_kernel.config.settings import Settings, get_settings
 from shared_kernel.interfaces.admin import router as admin_router
+from shared_kernel.observability import configure_logging
 from workflow_orchestration.interfaces.webhook import router as webhook_router
 
 
@@ -48,6 +49,7 @@ def create_app(
     model_config_store: ModelConfigStore | None = None,
 ) -> FastAPI:
     settings = settings or (application.settings if application else get_settings())
+    configure_logging(settings)
     if application is None:
         if checkpointer is None:
             checkpointer = _default_checkpointer(settings)

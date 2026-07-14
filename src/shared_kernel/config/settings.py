@@ -12,12 +12,17 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
+load_dotenv(".env.local", override=True)
 
 
 @dataclass(frozen=True)
 class Settings:
     """Runtime configuration. Everything comes from the environment so that
     switching providers or databases never requires a code change."""
+
+    log_level: str = field(
+        default_factory=lambda: os.environ.get("LOG_LEVEL", "info").upper()
+    )
 
     llm_provider: str = field(
         default_factory=lambda: os.environ.get("LLM_PROVIDER", "anthropic").lower()

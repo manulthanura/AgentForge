@@ -13,6 +13,8 @@ from langgraph.types import interrupt
 
 from issue_intake.application.analyze_issue import AnalyzeIssueUseCase
 from issue_intake.domain.models import Issue
+from pull_request.application.create_pull_request import CreatePullRequestUseCase
+from pull_request.application.ports import PullRequestError
 from shared_kernel.config.settings import Settings
 from shared_kernel.events import (
     EventBus,
@@ -34,6 +36,12 @@ logger = logging.getLogger(__name__)
 # bootstrap wires approval's RequestApprovalUseCase in here.
 ApprovalHook = Callable[[dict[str, Any]], Any]
 
+# Called with (issue_number, comment_body) whenever a workflow reaches a
+# terminal or human-actionable state, so the outcome shows up on the GitHub
+# issue itself instead of requiring status polling. The bootstrap wires
+# IssueCommenter.add_comment in here.
+CommentHook = Callable[[int, str], Any]
+
 
 def make_nodes(
     analyze_issue_uc: AnalyzeIssueUseCase,
@@ -43,6 +51,8 @@ def make_nodes(
     event_bus: EventBus | None = None,
     request_approval_hook: ApprovalHook | None = None,
     decision_logger: DecisionLogger | None = None,
+    create_pull_request_uc: CreatePullRequestUseCase | None = None,
+    comment_hook: CommentHook | None = None,
 ) -> dict[str, Any]:
     """Build the node callables bound to their collaborators."""
     decision_logger = decision_logger or DecisionLogger()
@@ -50,6 +60,25 @@ def make_nodes(
     def _publish(event) -> None:
         if event_bus:
             event_bus.publish(event)
+
+    def _post_comment(state: AgentState, body: str) -> None:
+        if not comment_hook:
+            return
+        number = int((state.get("issue") or {}).get("number", 0))
+        if not number:
+            return
+        try:
+            comment_hook(number, body)
+            logger.info("Posted comment on issue #%s", number)
+        except Exception:  # noqa: BLE001 — a failed comment must not break the workflow
+            logger.exception("Comment hook failed for issue #%s", number)
+
+    def _collect_diffs(state: AgentState) -> list[dict[str, Any]]:
+        return [
+            r["result"]
+            for r in state.get("tool_results", [])
+            if r.get("ok") and r.get("tool") in {"draft_fix", "propose_edit"}
+        ]
 
     def analyze_issue(state: AgentState) -> AgentState:
         issue = Issue.from_dict(state.get("issue", {}))
@@ -88,6 +117,14 @@ def make_nodes(
         }
 
     def request_clarification(state: AgentState) -> AgentState:
+        _post_comment(
+            state,
+            "This issue needs more detail before AgentForge can work on it. "
+            "Could you add:\n"
+            "- Steps to reproduce the issue\n"
+            "- Expected vs actual behavior\n"
+            "- Environment details",
+        )
         return {
             "status": WorkflowStatus.AWAITING_CLARIFICATION.value,
             "decisions": [
@@ -181,11 +218,7 @@ def make_nodes(
         """Record the approval request and alert a human. Runs exactly once
         per gate hit — the interrupt lives in await_approval so this node's
         side effects are not replayed on resume."""
-        diffs = [
-            r["result"]
-            for r in state.get("tool_results", [])
-            if r.get("ok") and r.get("tool") in {"draft_fix", "propose_edit"}
-        ]
+        diffs = _collect_diffs(state)
         analysis = state.get("analysis") or {}
         payload = {
             "workflow_id": state.get("workflow_id", ""),
@@ -255,23 +288,102 @@ def make_nodes(
         }
 
     def finalize(state: AgentState) -> AgentState:
+        if create_pull_request_uc is None:
+            _post_comment(
+                state,
+                "AgentForge finished analyzing this issue. Pull-request "
+                "creation isn't enabled for this deployment, so no PR was "
+                "opened.",
+            )
+            return {
+                "status": WorkflowStatus.DONE.value,
+                "decisions": [
+                    Decision(
+                        node="finalize", action=FINISH, reasoning="Workflow complete."
+                    ).to_dict()
+                ],
+            }
+
+        diffs = _collect_diffs(state)
+        changes = {
+            d["path"]: d["updated"]
+            for d in diffs
+            if d.get("path") and d.get("updated")
+        }
+        if not changes:
+            _post_comment(
+                state,
+                "AgentForge analyzed this issue but did not produce a code "
+                "change to open a pull request for.",
+            )
+            return {
+                "status": WorkflowStatus.DONE.value,
+                "decisions": [
+                    Decision(
+                        node="finalize",
+                        action=FINISH,
+                        reasoning="Workflow complete; no file changes to open a PR for.",
+                    ).to_dict()
+                ],
+            }
+
+        try:
+            pr = create_pull_request_uc.execute(
+                issue=state.get("issue", {}),
+                analysis=state.get("analysis"),
+                diffs=diffs,
+                changes=changes,
+            )
+        except PullRequestError as exc:
+            _post_comment(
+                state,
+                "AgentForge drafted a fix for this issue, but opening the "
+                f"pull request failed: {exc}",
+            )
+            return {
+                "status": WorkflowStatus.DONE.value,
+                "pull_request": {"error": str(exc)},
+                "decisions": [
+                    Decision(
+                        node="finalize",
+                        action="pr_failed",
+                        reasoning=str(exc),
+                    ).to_dict()
+                ],
+            }
+        _post_comment(
+            state, f"AgentForge opened a pull request with a proposed fix: {pr.url}"
+        )
         return {
             "status": WorkflowStatus.DONE.value,
+            "pull_request": {
+                "number": pr.number,
+                "url": pr.url,
+                "branch": pr.branch,
+            },
             "decisions": [
                 Decision(
-                    node="finalize", action=FINISH, reasoning="Workflow complete."
+                    node="finalize",
+                    action="pr_opened",
+                    reasoning=f"Opened PR #{pr.number}: {pr.url}",
                 ).to_dict()
             ],
         }
 
     def escalate(state: AgentState) -> AgentState:
+        reasoning = state.get("error") or "Escalated to human review."
+        _post_comment(
+            state,
+            "AgentForge could not complete this issue automatically and is "
+            f"escalating for human review.\n\nReason: {reasoning}",
+        )
         return {
             "status": WorkflowStatus.ESCALATED.value,
             "decisions": [
                 Decision(
                     node="escalate",
                     action=ESCALATE,
-                    reasoning=state.get("error") or "Escalated to human review.",
+                    reasoning=reasoning,
                 ).to_dict()
             ],
         }
