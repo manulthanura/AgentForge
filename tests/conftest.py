@@ -46,4 +46,8 @@ def fake_keys(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-azure-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com/")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "test-hf-token")
     monkeypatch.delenv("LLM_MODEL", raising=False)

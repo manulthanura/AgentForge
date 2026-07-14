@@ -45,7 +45,9 @@ async def github_webhook(request: Request):
     workflow_id = f"issue-{issue['number']}"
 
     application = request.app.state.application
-    final_state = application.run_workflow.execute(workflow_id, issue, workspace=".")
+    final_state = application.run_workflow.execute(
+        workflow_id, issue, workspace=settings.workspace_path
+    )
     return {
         "workflow_id": workflow_id,
         "status": final_state.get("status"),

@@ -71,7 +71,9 @@ def cmd_demo() -> None:
             checkpointer=checkpointer,
             repository=repository,
         )
-        return app.run_workflow.execute(workflow_id, SAMPLE_ISSUE, workspace=".")
+        return app.run_workflow.execute(
+            workflow_id, SAMPLE_ISSUE, workspace=settings.workspace_path
+        )
 
     if settings.database_url:
         from langgraph.checkpoint.postgres import PostgresSaver

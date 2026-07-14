@@ -5,12 +5,15 @@ description = "Autonomous AI agent with tool use and human-in-the-loop approval 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.116.0",
     "fastapi>=0.139.0",
     "httpx>=0.28.1",
+    "langchain-anthropic>=1.0.0",
+    "langchain-google-genai>=3.0.0",
+    "langchain-huggingface>=0.3.1",
+    "langchain-ollama>=1.0.0",
+    "langchain-openai>=0.4.0",
     "langgraph>=1.2.7",
     "langgraph-checkpoint-postgres>=3.1.0",
-    "openai>=2.44.0",
     "psycopg[binary]>=3.3.4",
     "pygithub>=2.9.1",
     "python-dotenv>=1.2.2",

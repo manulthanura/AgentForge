@@ -10,6 +10,9 @@ from shared_kernel.config.model_config import ModelConfigStore
 from shared_kernel.config.settings import Settings
 from shared_kernel.llm import PROVIDERS, LLMProvider, get_provider
 from shared_kernel.llm.anthropic_adapter import AnthropicProvider
+from shared_kernel.llm.azure_openai_adapter import AzureOpenAIProvider
+from shared_kernel.llm.gemini_adapter import GeminiProvider
+from shared_kernel.llm.huggingface_adapter import HuggingFaceProvider
 from shared_kernel.llm.ollama_adapter import OllamaProvider
 from shared_kernel.llm.openai_adapter import OpenAIProvider
 from shared_kernel.llm.openrouter_adapter import OpenRouterProvider
@@ -22,6 +25,9 @@ from shared_kernel.llm.openrouter_adapter import OpenRouterProvider
         ("openai", OpenAIProvider),
         ("ollama", OllamaProvider),
         ("openrouter", OpenRouterProvider),
+        ("azure", AzureOpenAIProvider),
+        ("gemini", GeminiProvider),
+        ("huggingface", HuggingFaceProvider),
     ],
 )
 def test_env_var_selects_provider(monkeypatch, fake_keys, env_value, expected_cls, tmp_path):
@@ -58,7 +64,10 @@ def test_unknown_provider_raises_with_valid_choices(monkeypatch, fake_keys):
         get_provider(Settings())
 
 
-@pytest.mark.parametrize("env_value", ["anthropic", "openai", "ollama", "openrouter"])
+@pytest.mark.parametrize(
+    "env_value",
+    ["anthropic", "openai", "ollama", "openrouter", "azure", "gemini", "huggingface"],
+)
 def test_model_override_via_env(monkeypatch, fake_keys, env_value):
     monkeypatch.setenv("LLM_PROVIDER", env_value)
     monkeypatch.setenv("LLM_MODEL", "custom-model-x")
@@ -74,4 +83,12 @@ def test_model_config_json_drives_default_model(monkeypatch, fake_keys, tmp_path
 
 
 def test_registry_covers_all_required_providers():
-    assert {"anthropic", "openai", "ollama", "openrouter"} <= set(PROVIDERS)
+    assert {
+        "anthropic",
+        "openai",
+        "ollama",
+        "openrouter",
+        "azure",
+        "gemini",
+        "huggingface",
+    } <= set(PROVIDERS)

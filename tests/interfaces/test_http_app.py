@@ -78,6 +78,62 @@ def test_signed_github_webhook_starts_workflow(client):
     assert status["decisions"]
 
 
+def test_webhook_searches_workspace_path_env_var(monkeypatch, tmp_path):
+    # webhook.py must scan WORKSPACE_PATH, not the process's own directory —
+    # this is what makes testing against a real, separately-cloned repo
+    # possible (docs/getting-started.md).
+    (tmp_path / "login.py").write_text(
+        "def login(email):\n    return authenticate(email)\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", GH_SECRET)
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    monkeypatch.setenv("CODE_SEARCHER", "filesystem")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    settings = Settings()
+    provider = FakeProvider(
+        responses=[
+            json.dumps(
+                {
+                    "issue_type": "bug",
+                    "affected_area": "auth",
+                    "symptoms": "login fails",
+                    "severity": "high",
+                    "reasoning": "repro present",
+                }
+            ),
+            json.dumps(
+                {
+                    "action": "search_code",
+                    "args": {"query": "authenticate"},
+                    "reasoning": "find the auth code",
+                }
+            ),
+            json.dumps({"action": "finish", "args": {}, "reasoning": "done"}),
+        ]
+    )
+    application = build_application(
+        settings=settings, provider=provider, checkpointer=InMemorySaver()
+    )
+    app = create_app(application=application, settings=settings)
+    test_client = TestClient(app)
+
+    body = github_issue_event(44, "Login fails", "auth is broken", ["bug"])
+    response = test_client.post(
+        "/webhooks/github", content=body, headers=github_headers(GH_SECRET, body)
+    )
+    assert response.status_code == 200
+
+    # tool_results (unlike decisions) isn't exposed over HTTP, so read it
+    # straight from engine state to confirm the search actually ran against
+    # WORKSPACE_PATH rather than the process's own directory.
+    state = application.engine.get_state("issue-44")
+    search_entry = next(
+        tr for tr in state["tool_results"] if tr["tool"] == "search_code"
+    )
+    assert search_entry["ok"] is True
+    assert search_entry["result"]["matches"][0]["file"] == "login.py"
+
+
 def test_non_issue_events_ignored(client):
     body = b'{"action": "opened"}'
     headers = github_headers(GH_SECRET, body) | {"X-GitHub-Event": "push"}

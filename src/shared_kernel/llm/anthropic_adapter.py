@@ -1,26 +1,21 @@
-"""Anthropic (Claude) adapter for the LLMProvider port."""
+"""Anthropic (Claude) adapter for the LLMProvider port.
+
+Built on LangChain's ``langchain-anthropic`` integration (``ChatAnthropic``)
+rather than a raw ``anthropic`` SDK client.
+"""
 
 from __future__ import annotations
 
-import anthropic
+from langchain_anthropic import ChatAnthropic
 
 from ..config.settings import Settings
-from .port import (
-    LLMError,
-    LLMProvider,
-    LLMRateLimitError,
-    LLMResponse,
-    LLMUnavailableError,
-    Message,
+from .langchain_support import (
+    raise_as_llm_error,
+    response_text,
+    to_langchain_messages,
+    token_usage,
 )
-
-
-def _retry_after_header(exc: anthropic.APIStatusError) -> float | None:
-    try:
-        value = exc.response.headers.get("retry-after")
-        return float(value) if value is not None else None
-    except (AttributeError, TypeError, ValueError):
-        return None
+from .port import LLMError, LLMProvider, LLMResponse, Message
 
 
 class AnthropicProvider(LLMProvider):
@@ -29,7 +24,11 @@ class AnthropicProvider(LLMProvider):
 
     def __init__(self, settings: Settings, model: str | None = None):
         self.model = settings.llm_model or model or self.default_model
-        self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self._chat_model = ChatAnthropic(
+            model=self.model,
+            api_key=settings.anthropic_api_key,
+            thinking={"type": "adaptive"},
+        )
 
     def complete(
         self,
@@ -41,46 +40,23 @@ class AnthropicProvider(LLMProvider):
     ) -> LLMResponse:
         # json_mode is prompt-level for Anthropic; complete_json adds the
         # instruction and parses robustly.
-        kwargs: dict = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": m["role"], "content": m["content"]} for m in messages
-            ],
-            "thinking": {"type": "adaptive"},
-        }
-        if system:
-            kwargs["system"] = system
+        lc_messages = to_langchain_messages(messages, system)
         try:
-            response = self._client.messages.create(**kwargs)
-        except anthropic.APIStatusError as exc:
-            status = exc.status_code
-            if status == 429:
-                raise LLMRateLimitError(
-                    f"Anthropic rate limited: {exc}",
-                    retry_after=_retry_after_header(exc),
-                ) from exc
-            if status >= 500 or status == 529:  # 529 = overloaded
-                raise LLMUnavailableError(
-                    f"Anthropic unavailable ({status}): {exc}"
-                ) from exc
-            raise LLMError(f"Anthropic request failed: {exc}") from exc
-        except anthropic.APIConnectionError as exc:
-            raise LLMUnavailableError(f"Anthropic unreachable: {exc}") from exc
-        except anthropic.APIError as exc:
-            raise LLMError(f"Anthropic request failed: {exc}") from exc
+            response = self._chat_model.bind(max_tokens=max_tokens).invoke(
+                lc_messages
+            )
+        except Exception as exc:
+            raise_as_llm_error("Anthropic", exc)
 
-        if response.stop_reason == "refusal":
+        if response.response_metadata.get("stop_reason") == "refusal":
             raise LLMError("Anthropic declined the request (stop_reason=refusal)")
 
-        text = "".join(
-            block.text for block in response.content if block.type == "text"
-        )
+        input_tokens, output_tokens = token_usage(response)
         return LLMResponse(
-            text=text,
-            model=response.model,
-            stop_reason=response.stop_reason,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            text=response_text(response),
+            model=response.response_metadata.get("model", self.model),
+            stop_reason=response.response_metadata.get("stop_reason"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             raw=response,
         )

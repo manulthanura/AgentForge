@@ -1,18 +1,23 @@
-"""Each adapter maps the shared port onto its SDK correctly.
+"""Each adapter maps the shared port onto its LangChain chat model correctly.
 
-SDK clients are stubbed at the adapter boundary — no network traffic.
+All seven adapters (Anthropic, OpenAI, Ollama, OpenRouter, Azure OpenAI,
+Gemini, Hugging Face) wrap a LangChain ``BaseChatModel`` rather than a raw
+vendor SDK, so a stub only needs to mimic `.bind(**kwargs).invoke(messages)`
+and return a real ``AIMessage`` (content / response_metadata /
+usage_metadata) — no network traffic anywhere.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import httpx
 import pytest
+from langchain_core.messages import AIMessage
 
 from shared_kernel.config.settings import Settings
 from shared_kernel.llm import LLMError, LLMUnavailableError
 from shared_kernel.llm.anthropic_adapter import AnthropicProvider
+from shared_kernel.llm.azure_openai_adapter import AzureOpenAIProvider
+from shared_kernel.llm.gemini_adapter import GeminiProvider
+from shared_kernel.llm.huggingface_adapter import HuggingFaceProvider
 from shared_kernel.llm.ollama_adapter import OllamaProvider
 from shared_kernel.llm.openai_adapter import OpenAIProvider
 from shared_kernel.llm.openrouter_adapter import OpenRouterProvider
@@ -20,216 +25,199 @@ from shared_kernel.llm.openrouter_adapter import OpenRouterProvider
 MESSAGES = [{"role": "user", "content": "hello"}]
 
 
-# --- Anthropic -----------------------------------------------------------
-
-
-class _StubAnthropicMessages:
+class _StubChatModel:
     def __init__(self, response):
         self.response = response
-        self.kwargs = None
+        self.bind_kwargs: dict = {}
+        self.invoked_messages = None
 
-    def create(self, **kwargs):
-        self.kwargs = kwargs
+    def bind(self, **kwargs):
+        self.bind_kwargs.update(kwargs)
+        return self
+
+    def invoke(self, messages):
+        self.invoked_messages = messages
         return self.response
 
 
-def _anthropic_response(text="hi there"):
-    return SimpleNamespace(
-        content=[
-            SimpleNamespace(type="thinking", thinking=""),
-            SimpleNamespace(type="text", text=text),
-        ],
-        model="claude-opus-4-8",
-        stop_reason="end_turn",
-        usage=SimpleNamespace(input_tokens=12, output_tokens=7),
+class _RaisingChatModel:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def bind(self, **kwargs):
+        return self
+
+    def invoke(self, messages):
+        raise self.exc
+
+
+def _ai_message(text="hi there", input_tokens=18, output_tokens=5, content=None, **metadata):
+    return AIMessage(
+        content=content if content is not None else text,
+        response_metadata=metadata,
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
     )
 
 
-def _make_anthropic(fake_keys) -> tuple[AnthropicProvider, _StubAnthropicMessages]:
+# --- Anthropic -------------------------------------------------------------
+
+
+def test_anthropic_configures_adaptive_thinking(fake_keys):
+    # `thinking` is set once at ChatAnthropic construction, not per-call, so
+    # this is verified directly on the real (cheap, network-free) client
+    # rather than through a stub.
     provider = AnthropicProvider(Settings())
-    stub = _StubAnthropicMessages(_anthropic_response())
-    provider._client = SimpleNamespace(messages=stub)
-    return provider, stub
+    assert provider._chat_model.thinking == {"type": "adaptive"}
 
 
 def test_anthropic_request_mapping(fake_keys):
-    provider, stub = _make_anthropic(fake_keys)
+    provider = AnthropicProvider(Settings())
+    stub = _StubChatModel(
+        _ai_message(
+            content=[
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": "hi there"},
+            ],
+            model="claude-opus-4-8",
+            stop_reason="end_turn",
+        )
+    )
+    provider._chat_model = stub
     result = provider.complete(MESSAGES, system="be brief", max_tokens=1234)
-    assert stub.kwargs["model"] == "claude-opus-4-8"
-    assert stub.kwargs["system"] == "be brief"
-    assert stub.kwargs["max_tokens"] == 1234
-    assert stub.kwargs["messages"] == MESSAGES
-    assert stub.kwargs["thinking"] == {"type": "adaptive"}
+    assert stub.bind_kwargs == {"max_tokens": 1234}
+    assert stub.invoked_messages[0].content == "be brief"
     # Thinking blocks are skipped; only text blocks are returned.
     assert result.text == "hi there"
+    assert result.model == "claude-opus-4-8"
     assert result.stop_reason == "end_turn"
-    assert result.input_tokens == 12
-    assert result.output_tokens == 7
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
 
 
 def test_anthropic_refusal_raises(fake_keys):
-    provider, stub = _make_anthropic(fake_keys)
-    stub.response = SimpleNamespace(
-        content=[],
-        model="claude-opus-4-8",
-        stop_reason="refusal",
-        usage=SimpleNamespace(input_tokens=0, output_tokens=0),
+    provider = AnthropicProvider(Settings())
+    provider._chat_model = _StubChatModel(
+        _ai_message(text="", model="claude-opus-4-8", stop_reason="refusal")
     )
     with pytest.raises(LLMError, match="refusal"):
         provider.complete(MESSAGES)
 
 
-# --- OpenAI --------------------------------------------------------------
+def test_anthropic_5xx_becomes_llm_unavailable_error(fake_keys):
+    provider = AnthropicProvider(Settings())
+
+    class FakeError(Exception):
+        status_code = 529  # Anthropic's "overloaded" status
+
+    provider._chat_model = _RaisingChatModel(FakeError("overloaded"))
+    with pytest.raises(LLMUnavailableError):
+        provider.complete(MESSAGES)
 
 
-class _StubOpenAICompletions:
-    def __init__(self, response):
-        self.response = response
-        self.kwargs = None
-
-    def create(self, **kwargs):
-        self.kwargs = kwargs
-        return self.response
-
-
-def _openai_response(text="hi from gpt"):
-    return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content=text), finish_reason="stop"
-            )
-        ],
-        model="gpt-4o",
-        usage=SimpleNamespace(prompt_tokens=20, completion_tokens=9),
-    )
+# --- OpenAI ------------------------------------------------------------
 
 
 def test_openai_request_mapping(fake_keys):
     provider = OpenAIProvider(Settings())
-    stub = _StubOpenAICompletions(_openai_response())
-    provider._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=stub)
+    stub = _StubChatModel(
+        _ai_message(text="hi from gpt", model_name="gpt-4o", finish_reason="stop")
     )
+    provider._chat_model = stub
     result = provider.complete(
         MESSAGES, system="be brief", max_tokens=777, json_mode=True
     )
-    assert stub.kwargs["model"] == "gpt-4o"
-    assert stub.kwargs["max_completion_tokens"] == 777
-    assert stub.kwargs["response_format"] == {"type": "json_object"}
-    # System prompt becomes the leading system message.
-    assert stub.kwargs["messages"][0] == {"role": "system", "content": "be brief"}
-    assert stub.kwargs["messages"][1:] == MESSAGES
+    assert stub.bind_kwargs["max_tokens"] == 777
+    assert stub.bind_kwargs["response_format"] == {"type": "json_object"}
+    assert stub.invoked_messages[0].content == "be brief"
     assert result.text == "hi from gpt"
+    assert result.model == "gpt-4o"
     assert result.stop_reason == "stop"
-    assert result.input_tokens == 20
-    assert result.output_tokens == 9
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
+
+
+def test_openai_5xx_becomes_llm_unavailable_error(fake_keys):
+    provider = OpenAIProvider(Settings())
+
+    class FakeError(Exception):
+        status_code = 503
+
+    provider._chat_model = _RaisingChatModel(FakeError("unavailable"))
+    with pytest.raises(LLMUnavailableError):
+        provider.complete(MESSAGES)
 
 
 # --- Ollama --------------------------------------------------------------
 
 
-class _StubHttpxClient:
-    def __init__(self, payload):
-        self.payload = payload
-        self.path = None
-        self.json_body = None
-
-    def post(self, path, json=None):
-        self.path = path
-        self.json_body = json
-        request = httpx.Request("POST", "http://localhost:11434" + path)
-        return httpx.Response(200, json=self.payload, request=request)
-
-
 def test_ollama_request_mapping(fake_keys):
     provider = OllamaProvider(Settings())
-    stub = _StubHttpxClient(
-        {
-            "model": "llama3.1",
-            "message": {"role": "assistant", "content": "hi from llama"},
-            "done_reason": "stop",
-            "prompt_eval_count": 15,
-            "eval_count": 6,
-        }
+    stub = _StubChatModel(
+        _ai_message(text="hi from llama", model="llama3.1", done_reason="stop")
     )
-    provider._client = stub
+    provider._chat_model = stub
     result = provider.complete(
         MESSAGES, system="be brief", max_tokens=512, json_mode=True
     )
-    assert stub.path == "/api/chat"
-    assert stub.json_body["model"] == "llama3.1"
-    assert stub.json_body["stream"] is False
-    assert stub.json_body["format"] == "json"
-    assert stub.json_body["options"] == {"num_predict": 512}
-    assert stub.json_body["messages"][0] == {"role": "system", "content": "be brief"}
+    assert stub.bind_kwargs == {"num_predict": 512, "format": "json"}
+    assert stub.invoked_messages[0].content == "be brief"
     assert result.text == "hi from llama"
+    assert result.model == "llama3.1"
     assert result.stop_reason == "stop"
-    assert result.input_tokens == 15
-    assert result.output_tokens == 6
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
 
 
-def test_ollama_http_error_becomes_llm_error(fake_keys):
+def test_ollama_connection_error_becomes_llm_unavailable_error(fake_keys):
     provider = OllamaProvider(Settings())
-
-    class _Boom:
-        def post(self, path, json=None):
-            raise httpx.ConnectError("connection refused")
-
-    provider._client = _Boom()
-    # Connection failures are transient -> retryable LLMUnavailableError
-    # (still an LLMError for callers that don't care about the distinction).
-    with pytest.raises(LLMError, match="Ollama unreachable"):
+    provider._chat_model = _RaisingChatModel(ConnectionError("connection refused"))
+    with pytest.raises(LLMUnavailableError, match="Ollama unreachable"):
         provider.complete(MESSAGES)
 
 
-# --- OpenRouter ------------------------------------------------------------
-
-
-def _openrouter_response(text="hi from openrouter"):
-    return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content=text), finish_reason="stop"
-            )
-        ],
-        model="openai/gpt-4o",
-        usage=SimpleNamespace(prompt_tokens=18, completion_tokens=5),
-    )
+# --- OpenRouter --------------------------------------------------------
 
 
 def test_openrouter_uses_openai_compatible_base_url(fake_keys):
     provider = OpenRouterProvider(Settings())
-    assert str(provider._client.base_url) == "https://openrouter.ai/api/v1/"
+    assert str(provider._chat_model.openai_api_base) == "https://openrouter.ai/api/v1"
     assert provider.model == "openai/gpt-4o"
 
 
 def test_openrouter_attribution_headers_are_optional(fake_keys):
     # No OPENROUTER_SITE_URL / OPENROUTER_APP_NAME set -> no extra headers.
     provider = OpenRouterProvider(Settings())
-    assert "HTTP-Referer" not in provider._client.default_headers
-    assert "X-Title" not in provider._client.default_headers
+    headers = provider._chat_model.default_headers or {}
+    assert "HTTP-Referer" not in headers
+    assert "X-Title" not in headers
 
 
 def test_openrouter_attribution_headers_when_configured(monkeypatch, fake_keys):
     monkeypatch.setenv("OPENROUTER_SITE_URL", "https://example.com")
     monkeypatch.setenv("OPENROUTER_APP_NAME", "AgentForge")
     provider = OpenRouterProvider(Settings())
-    assert provider._client.default_headers["HTTP-Referer"] == "https://example.com"
-    assert provider._client.default_headers["X-Title"] == "AgentForge"
+    headers = provider._chat_model.default_headers
+    assert headers["HTTP-Referer"] == "https://example.com"
+    assert headers["X-Title"] == "AgentForge"
 
 
 def test_openrouter_request_mapping(fake_keys):
     provider = OpenRouterProvider(Settings())
-    stub = _StubOpenAICompletions(_openrouter_response())
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=stub))
+    stub = _StubChatModel(
+        _ai_message(
+            text="hi from openrouter", model_name="openai/gpt-4o", finish_reason="stop"
+        )
+    )
+    provider._chat_model = stub
     result = provider.complete(
         MESSAGES, system="be brief", max_tokens=555, json_mode=True
     )
-    assert stub.kwargs["model"] == "openai/gpt-4o"
-    assert stub.kwargs["max_tokens"] == 555
-    assert stub.kwargs["response_format"] == {"type": "json_object"}
-    assert stub.kwargs["messages"][0] == {"role": "system", "content": "be brief"}
-    assert stub.kwargs["messages"][1:] == MESSAGES
+    assert stub.bind_kwargs["max_tokens"] == 555
+    assert stub.bind_kwargs["response_format"] == {"type": "json_object"}
     assert result.text == "hi from openrouter"
     assert result.stop_reason == "stop"
     assert result.input_tokens == 18
@@ -237,14 +225,109 @@ def test_openrouter_request_mapping(fake_keys):
 
 
 def test_openrouter_null_choices_becomes_llm_unavailable_error(fake_keys):
-    # OpenRouter can return HTTP 200 with `choices: null` and an embedded
-    # `error` when the routed upstream provider fails (common on free-tier
-    # models), instead of raising an HTTP error status.
+    # langchain-openai raises ValueError(error_dict) when an OpenAI-compatible
+    # API (like OpenRouter's free-tier models) returns HTTP 200 with a null
+    # `choices` and an embedded `error`, instead of an HTTP error status.
     provider = OpenRouterProvider(Settings())
-    response = SimpleNamespace(
-        choices=None, error={"message": "upstream provider timed out"}
+    provider._chat_model = _RaisingChatModel(
+        ValueError({"message": "upstream provider timed out"})
     )
-    stub = _StubOpenAICompletions(response)
-    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=stub))
     with pytest.raises(LLMUnavailableError, match="upstream provider timed out"):
+        provider.complete(MESSAGES)
+
+
+# --- Azure OpenAI, Gemini, Hugging Face -----------------------------------
+
+
+def test_azure_openai_request_mapping(fake_keys):
+    provider = AzureOpenAIProvider(Settings())
+    stub = _StubChatModel(
+        _ai_message(text="hi from azure", model_name="gpt-4o", finish_reason="stop")
+    )
+    provider._chat_model = stub
+    result = provider.complete(MESSAGES, system="be brief", max_tokens=555)
+    assert stub.bind_kwargs == {"max_tokens": 555}
+    assert stub.invoked_messages[0].content == "be brief"
+    assert result.text == "hi from azure"
+    assert result.model == "gpt-4o"
+    assert result.stop_reason == "stop"
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
+
+
+def test_azure_openai_json_mode_binds_response_format(fake_keys):
+    provider = AzureOpenAIProvider(Settings())
+    stub = _StubChatModel(_ai_message())
+    provider._chat_model = stub
+    provider.complete(MESSAGES, json_mode=True)
+    assert stub.bind_kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_azure_openai_5xx_becomes_llm_unavailable_error(fake_keys):
+    provider = AzureOpenAIProvider(Settings())
+
+    class FakeError(Exception):
+        status_code = 503
+
+    provider._chat_model = _RaisingChatModel(FakeError("overloaded"))
+    with pytest.raises(LLMUnavailableError):
+        provider.complete(MESSAGES)
+
+
+def test_gemini_request_mapping(fake_keys):
+    provider = GeminiProvider(Settings())
+    stub = _StubChatModel(
+        _ai_message(
+            text="hi from gemini", model_name="gemini-2.5-flash", finish_reason="stop"
+        )
+    )
+    provider._chat_model = stub
+    result = provider.complete(MESSAGES, system="be brief", max_tokens=777)
+    assert stub.bind_kwargs == {"max_output_tokens": 777}
+    assert result.text == "hi from gemini"
+    assert result.model == "gemini-2.5-flash"
+    assert result.input_tokens == 18
+    assert result.output_tokens == 5
+
+
+def test_gemini_5xx_becomes_llm_unavailable_error(fake_keys):
+    provider = GeminiProvider(Settings())
+
+    class FakeError(Exception):
+        code = 503
+
+    provider._chat_model = _RaisingChatModel(FakeError("unavailable"))
+    with pytest.raises(LLMUnavailableError):
+        provider.complete(MESSAGES)
+
+
+def test_huggingface_stays_lazy_until_first_use(fake_keys):
+    # Constructing the provider must not build the real HuggingFaceEndpoint /
+    # ChatHuggingFace client (tokenizer/chat-template resolution can touch
+    # the network) — it should only happen on first `complete()` call.
+    provider = HuggingFaceProvider(Settings())
+    assert provider._chat_model is None
+
+
+def test_huggingface_request_mapping(fake_keys):
+    provider = HuggingFaceProvider(Settings())
+    stub = _StubChatModel(
+        _ai_message(text="hi from an open model", model="x", finish_reason="stop")
+    )
+    provider._chat_model = stub  # pre-populate to skip real construction
+    result = provider.complete(MESSAGES, max_tokens=333)
+    assert stub.bind_kwargs == {"max_tokens": 333}
+    assert result.text == "hi from an open model"
+
+
+def test_huggingface_5xx_becomes_llm_unavailable_error(fake_keys):
+    provider = HuggingFaceProvider(Settings())
+
+    class FakeError(Exception):
+        pass
+
+    err = FakeError("service unavailable")
+    err.response = type("R", (), {"status_code": 503, "headers": {}})()
+    provider._chat_model = _RaisingChatModel(err)
+    with pytest.raises(LLMUnavailableError):
         provider.complete(MESSAGES)

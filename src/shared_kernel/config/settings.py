@@ -52,6 +52,40 @@ class Settings:
         )
     )
 
+    # Azure OpenAI.
+    azure_openai_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("AZURE_OPENAI_API_KEY")
+    )
+    azure_openai_endpoint: str | None = field(
+        default_factory=lambda: os.environ.get("AZURE_OPENAI_ENDPOINT")
+    )
+    azure_openai_api_version: str = field(
+        default_factory=lambda: os.environ.get(
+            "AZURE_OPENAI_API_VERSION", "2024-10-21"
+        )
+    )
+    # Deployment name in the Azure resource; falls back to the model name.
+    azure_openai_deployment: str | None = field(
+        default_factory=lambda: os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+    )
+
+    # Google Gemini.
+    google_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("GOOGLE_API_KEY")
+    )
+
+    # Hugging Face (serverless Inference Providers or a dedicated Endpoint).
+    huggingface_api_token: str | None = field(
+        default_factory=lambda: os.environ.get("HUGGINGFACEHUB_API_TOKEN")
+        or os.environ.get("HUGGINGFACE_API_KEY")
+    )
+    huggingface_endpoint_url: str | None = field(
+        default_factory=lambda: os.environ.get("HUGGINGFACE_ENDPOINT_URL")
+    )
+    huggingface_task: str = field(
+        default_factory=lambda: os.environ.get("HUGGINGFACE_TASK", "text-generation")
+    )
+
     database_url: str | None = field(
         default_factory=lambda: os.environ.get("DATABASE_URL")
     )
@@ -67,6 +101,13 @@ class Settings:
     # Code searcher adapter: "tree_sitter" (default) or "filesystem".
     code_searcher: str = field(
         default_factory=lambda: os.environ.get("CODE_SEARCHER", "tree_sitter").lower()
+    )
+
+    # Local filesystem path the code searcher scans for a triggered workflow
+    # (this process does not clone GITHUB_REPO itself — point this at an
+    # existing checkout). Defaults to the current working directory.
+    workspace_path: str = field(
+        default_factory=lambda: os.environ.get("WORKSPACE_PATH", ".")
     )
 
     # Webhook signature secrets (S-06): reject unsigned/forged payloads.
